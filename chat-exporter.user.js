@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xoul.ai Chat Bubble Exporter
-// @namespace    tinylife.chatexporter
+// @namespace    xoul.chatexporter
 // @version      0.3
-// @description  Export chat bubble TEXT ONLY from Xoul.ai chats — no hidden metadata, no API scraping. Handles the site's virtualized (auto-scrolling) message list.
+// @description  Export chat text as plain text or JSONL for SillyTavern.
 // @author       Lulorick
 // @match        https://xoul.ai/*
 // @match        https://*.xoul.ai/*
@@ -14,25 +14,15 @@
 (function () {
   'use strict';
 
-  // =========================================================================
-  // SELECTORS — these match Xoul.ai's current site structure. If Xoul.ai
-  // updates their site and this breaks, these are the first things to check
-  // via DevTools (right-click a bubble -> Inspect).
-  // =========================================================================
   const CONFIG = {
-    // The scrollable element that holds the whole chat
     scrollContainerSelector: '#chat-container',
 
-    // One full message "card" (avatar + name + bubble + timestamp)
     bubbleContainerSelector: '[class*="ChatBubble_container__"]',
 
-    // Inside a bubble container: tells us who sent it
-    senderInfoSelector: '[class*="ChatBubble_sender_info__"]',   // has data-is-bot="true"/"false"
+    senderInfoSelector: '[class*="ChatBubble_sender_info__"]',
 
-    // Inside a bubble container: the sender's display name
     nameSelector: '[class*="ChatBubble_name__"]',
 
-    // Inside a bubble container: the actual message text
     textSelector: '[class*="ChatBubble_messagecontainer__"]',
   };
 
@@ -40,12 +30,6 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // =========================================================================
-  // FILENAME HELPERS
-  // =========================================================================
-
-  // Pulls the chat's title from the header at the top of the chat window
-  // (the text next to the group icon, e.g. "Long Chat for Testing 2").
   function getChatName() {
     const nameEl = document.querySelector(
       '[class*="ChatUI_info__"] [class*="LineClamp_paragraph__"]'
@@ -54,7 +38,6 @@
     return name || 'Xoul Chat';
   }
 
-  // Strips characters that aren't safe in filenames on Windows/Mac/Linux
   function sanitizeFilename(name) {
     return name
       .replace(/[\\/:*?"<>|]/g, '')
@@ -62,7 +45,6 @@
       .trim();
   }
 
-  // e.g. "2026-08-23_1802"
   function timestampSuffix() {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
@@ -76,9 +58,6 @@
     return `${base} - ${timestampSuffix()}.${extension}`;
   }
 
-  // =========================================================================
-  // SCRAPE ONE BUBBLE
-  // =========================================================================
   function scrapeBubble(bubbleEl) {
     const senderInfo = bubbleEl.querySelector(CONFIG.senderInfoSelector);
     const isBot = senderInfo ? senderInfo.getAttribute('data-is-bot') === 'true' : null;
@@ -92,11 +71,6 @@
     return { name, isUser: isBot === false, text };
   }
 
-  // =========================================================================
-  // AUTO-SCROLL + COLLECT
-  // Scrolls from top to bottom of the chat, capturing bubbles as they
-  // render, deduping by each message's stable "top" position fingerprint.
-  // =========================================================================
   async function collectAllMessages(onProgress) {
     const scrollContainer = document.querySelector(CONFIG.scrollContainerSelector);
     if (!scrollContainer) {
@@ -104,11 +78,11 @@
       return [];
     }
 
-    const collected = new Map(); // key: "top" px string -> message object
+    const collected = new Map();
 
     function captureVisible() {
       document.querySelectorAll(CONFIG.bubbleContainerSelector).forEach((bubbleEl) => {
-        const wrapper = bubbleEl.parentElement; // carries the inline top:Xpx style
+        const wrapper = bubbleEl.parentElement;
         const key = wrapper && wrapper.style && wrapper.style.top ? wrapper.style.top : null;
         if (!key || collected.has(key)) return;
         const msg = scrapeBubble(bubbleEl);
@@ -117,13 +91,12 @@
       if (onProgress) onProgress(collected.size);
     }
 
-    // Start at the very top of the chat
     scrollContainer.scrollTop = 0;
     await sleep(400);
     captureVisible();
 
     let stableRounds = 0;
-    const maxStableRounds = 3; // stop after a few scrolls in a row find nothing new
+    const maxStableRounds = 3;
 
     while (stableRounds < maxStableRounds) {
       const before = collected.size;
@@ -147,15 +120,11 @@
       }
     }
 
-    // Sort by the numeric "top" pixel value so messages come out in order
     return Array.from(collected.entries())
       .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
       .map(([, msg]) => msg);
   }
 
-  // =========================================================================
-  // FORMAT + DOWNLOAD
-  // =========================================================================
   function downloadFile(filename, content, mime) {
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -172,10 +141,6 @@
     return messages.map((m) => `${m.name}: ${m.text}`).join('\n\n');
   }
 
-  // SillyTavern chat files are JSONL (one JSON object per line), NOT a
-  // single JSON array. The first line must be a "header" object containing
-  // a chat_metadata key, or SillyTavern won't recognize the file as a chat
-  // at all (this is what caused the blank-chat import before).
   function formatAsSillyTavernJSONL(messages) {
     const characterName = (messages.find((m) => !m.isUser) || {}).name || 'Character';
     const userName = (messages.find((m) => m.isUser) || {}).name || 'User';
@@ -204,9 +169,6 @@
     return lines.join('\n');
   }
 
-  // =========================================================================
-  // UI
-  // =========================================================================
   function injectUI() {
     const panel = document.createElement('div');
     panel.style.cssText = `
