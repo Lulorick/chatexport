@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Xoul.ai Chat Bubble Exporter
 // @namespace    xoul.chatexporter
-// @version      0.3
-// @description  Export chat text as plain text or JSONL for SillyTavern + stats on chat for fun.
+// @version      0.6
+// @description  Tool which exports xoul.ai chats into plain text files, hmtl files or JSONL files for SillyTavern. Also contains a simple chat stat display.
 // @author       Lulorick
 // @match        https://xoul.ai/*
 // @match        https://*.xoul.ai/*
@@ -58,6 +58,37 @@
     return `${base} - ${timestampSuffix()}.${extension}`;
   }
 
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function walkFormattedNode(node) {
+    let html = '';
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        html += escapeHtml(child.textContent);
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        const tag = child.tagName.toLowerCase();
+        if (tag === 'br') {
+          html += '<br>';
+        } else if (tag === 'i' || tag === 'em') {
+          html += `<em>${walkFormattedNode(child)}</em>`;
+        } else if (tag === 'b' || tag === 'strong') {
+          html += `<strong>${walkFormattedNode(child)}</strong>`;
+        } else if (tag === 'script' || tag === 'style') {
+        } else {
+          html += walkFormattedNode(child);
+        }
+      }
+    });
+    return html;
+  }
+
+  function getFormattedHtml(textEl) {
+    if (!textEl) return '';
+    return walkFormattedNode(textEl);
+  }
+
   function scrapeBubble(bubbleEl) {
     const senderInfo = bubbleEl.querySelector(CONFIG.senderInfoSelector);
     const isBot = senderInfo ? senderInfo.getAttribute('data-is-bot') === 'true' : null;
@@ -67,8 +98,9 @@
 
     const textEl = bubbleEl.querySelector(CONFIG.textSelector);
     const text = textEl ? textEl.innerText.trim() : '';
+    const html = getFormattedHtml(textEl);
 
-    return { name, isUser: isBot === false, text };
+    return { name, isUser: isBot === false, text, html };
   }
 
   async function collectAllMessages(onProgress) {
@@ -243,14 +275,107 @@
     return lines.join('\n');
   }
 
+  function formatAsHTML(messages, chatName) {
+    const rows = messages
+      .map((m) => {
+        const side = m.isUser ? 'user' : 'character';
+        return `    <div class="message ${side}">
+      <div class="speaker">${escapeHtml(m.name)}</div>
+      <div class="bubble">${m.html || escapeHtml(m.text)}</div>
+    </div>`;
+      })
+      .join('\n');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${escapeHtml(chatName)}</title>
+<style>
+  body {
+    font-family: Georgia, 'Times New Roman', serif;
+    background: #1b1b1f;
+    color: #e8e8e8;
+    margin: 0;
+    padding: 32px 16px;
+  }
+  h1 {
+    font-family: -apple-system, sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+    color: #aaa;
+    max-width: 700px;
+    margin: 0 auto 24px auto;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #3a3a40;
+  }
+  .message {
+    max-width: 700px;
+    margin: 0 auto 18px auto;
+  }
+  .speaker {
+    font-family: -apple-system, sans-serif;
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+    margin-bottom: 4px;
+    color: #9ecbff;
+  }
+  .message.user .speaker {
+    color: #ffd479;
+    text-align: right;
+  }
+  .bubble {
+    background: #26262c;
+    border-radius: 10px;
+    padding: 14px 18px;
+    line-height: 1.65;
+    font-size: 15.5px;
+  }
+  .message.user .bubble {
+    background: #2f2a1f;
+  }
+  em { color: #d7d7d7; }
+  strong { color: #ffffff; }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(chatName)}</h1>
+${rows}
+</body>
+</html>`;
+  }
+
   function injectUI() {
+    const container = document.createElement('div');
+    container.style.cssText = `
+      position: fixed; bottom: 20px; right: 20px; z-index: 999999;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+      font-family: sans-serif;
+    `;
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.textContent = '⇩ Export';
+    toggleBtn.style.cssText = `
+      padding: 8px 14px; background: #333; color: #fff; border: 1px solid #555;
+      border-radius: 20px; cursor: pointer; font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    `;
+
     const panel = document.createElement('div');
     panel.style.cssText = `
-      position: fixed; bottom: 20px; right: 20px; z-index: 999999;
-      background: #222; border: 1px solid #555; border-radius: 8px;
-      padding: 10px; display: flex; flex-direction: column; gap: 8px;
-      font-family: sans-serif; align-items: stretch;
+      display: none; background: #222; border: 1px solid #555; border-radius: 8px;
+      padding: 10px; flex-direction: column; gap: 8px; align-items: stretch;
+      width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
     `;
+
+    let expanded = false;
+    function setExpanded(next) {
+      expanded = next;
+      panel.style.display = expanded ? 'flex' : 'none';
+      toggleBtn.textContent = expanded ? '✕ Close' : '⇩ Export';
+    }
+    toggleBtn.onclick = () => setExpanded(!expanded);
 
     const status = document.createElement('div');
     status.style.cssText = 'color: #ccc; font-size: 12px; text-align: center;';
@@ -265,10 +390,13 @@
     const btnJSON = document.createElement('button');
     btnJSON.textContent = 'Export .jsonl (SillyTavern)';
 
+    const btnHTML = document.createElement('button');
+    btnHTML.textContent = 'Export .html';
+
     const btnStats = document.createElement('button');
     btnStats.textContent = 'Message Stats';
 
-    const allButtons = [btnText, btnJSON, btnStats];
+    const allButtons = [btnText, btnJSON, btnHTML, btnStats];
     allButtons.forEach((btn) => {
       btn.style.cssText = `
         padding: 6px 10px; background: #444; color: #fff; border: 1px solid #666;
@@ -359,13 +487,18 @@
 
     btnText.onclick = () => runExport(formatAsText, 'txt', 'text/plain');
     btnJSON.onclick = () => runExport(formatAsSillyTavernJSONL, 'jsonl', 'application/jsonl');
+    btnHTML.onclick = () =>
+      runExport((messages) => formatAsHTML(messages, getChatName()), 'html', 'text/html');
     btnStats.onclick = () => runStats();
 
     panel.appendChild(status);
     panel.appendChild(btnRow);
     panel.appendChild(statsBox);
     panel.appendChild(btnDownloadReport);
-    document.body.appendChild(panel);
+
+    container.appendChild(panel);
+    container.appendChild(toggleBtn);
+    document.body.appendChild(container);
   }
 
   window.addEventListener('load', () => {
