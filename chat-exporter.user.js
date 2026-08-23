@@ -2,7 +2,7 @@
 // @name         Xoul.ai Chat Bubble Exporter
 // @namespace    xoul.chatexporter
 // @version      0.3
-// @description  Export chat text as plain text or JSONL for SillyTavern.
+// @description  Export chat text as plain text or JSONL for SillyTavern + stats on chat for fun.
 // @author       Lulorick
 // @match        https://xoul.ai/*
 // @match        https://*.xoul.ai/*
@@ -125,6 +125,80 @@
       .map(([, msg]) => msg);
   }
 
+  function computeAnalytics(messages) {
+    const bySpeaker = {};
+    let totalWords = 0;
+    let totalChars = 0;
+    let longest = null;
+
+    messages.forEach((m) => {
+      const words = m.text.trim().split(/\s+/).filter(Boolean).length;
+      const chars = m.text.length;
+
+      totalWords += words;
+      totalChars += chars;
+
+      if (!bySpeaker[m.name]) {
+        bySpeaker[m.name] = { count: 0, words: 0, chars: 0 };
+      }
+      bySpeaker[m.name].count += 1;
+      bySpeaker[m.name].words += words;
+      bySpeaker[m.name].chars += chars;
+
+      if (!longest || words > longest.words) {
+        longest = {
+          name: m.name,
+          words,
+          preview: m.text.length > 100 ? m.text.slice(0, 100) + '…' : m.text,
+        };
+      }
+    });
+
+    return {
+      totalMessages: messages.length,
+      totalWords,
+      totalChars,
+      avgWordsPerMessage: messages.length ? Math.round(totalWords / messages.length) : 0,
+      bySpeaker,
+      longest,
+    };
+  }
+
+  function formatAnalyticsReport(messages, chatName) {
+    const a = computeAnalytics(messages);
+    const lines = [];
+
+    lines.push(`Chat Stats: ${chatName}`);
+    lines.push('='.repeat(40));
+    lines.push('');
+    lines.push(`Total messages: ${a.totalMessages}`);
+    lines.push(`Total words: ${a.totalWords.toLocaleString()}`);
+    lines.push(`Total characters: ${a.totalChars.toLocaleString()}`);
+    lines.push(`Average words per message: ${a.avgWordsPerMessage}`);
+    lines.push('');
+    lines.push('By speaker:');
+    lines.push('-'.repeat(40));
+
+    Object.entries(a.bySpeaker).forEach(([name, s]) => {
+      const avg = s.count ? Math.round(s.words / s.count) : 0;
+      lines.push(`${name}:`);
+      lines.push(`  Messages: ${s.count}`);
+      lines.push(`  Words: ${s.words.toLocaleString()}`);
+      lines.push(`  Characters: ${s.chars.toLocaleString()}`);
+      lines.push(`  Avg words/message: ${avg}`);
+      lines.push('');
+    });
+
+    if (a.longest) {
+      lines.push('Longest message:');
+      lines.push('-'.repeat(40));
+      lines.push(`${a.longest.name} (${a.longest.words} words)`);
+      lines.push(`"${a.longest.preview}"`);
+    }
+
+    return lines.join('\n');
+  }
+
   function downloadFile(filename, content, mime) {
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -183,7 +257,7 @@
     status.textContent = 'Ready to export';
 
     const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display: flex; gap: 8px;';
+    btnRow.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap;';
 
     const btnText = document.createElement('button');
     btnText.textContent = 'Export .txt';
@@ -191,17 +265,40 @@
     const btnJSON = document.createElement('button');
     btnJSON.textContent = 'Export .jsonl (SillyTavern)';
 
-    [btnText, btnJSON].forEach((btn) => {
+    const btnStats = document.createElement('button');
+    btnStats.textContent = 'Message Stats';
+
+    const allButtons = [btnText, btnJSON, btnStats];
+    allButtons.forEach((btn) => {
       btn.style.cssText = `
         padding: 6px 10px; background: #444; color: #fff; border: 1px solid #666;
-        border-radius: 4px; cursor: pointer; font-size: 13px; flex: 1;
+        border-radius: 4px; cursor: pointer; font-size: 13px; flex: 1 1 auto;
+        white-space: nowrap;
       `;
       btnRow.appendChild(btn);
     });
 
+    const statsBox = document.createElement('pre');
+    statsBox.style.cssText = `
+      display: none; margin: 0; max-height: 260px; overflow-y: auto;
+      background: #1a1a1a; border: 1px solid #444; border-radius: 4px;
+      padding: 8px; color: #ddd; font-size: 11px; white-space: pre-wrap;
+      font-family: monospace; max-width: 320px;
+    `;
+
+    const btnDownloadReport = document.createElement('button');
+    btnDownloadReport.textContent = 'Download full report (.txt)';
+    btnDownloadReport.style.cssText = `
+      display: none; padding: 6px 10px; background: #444; color: #fff;
+      border: 1px solid #666; border-radius: 4px; cursor: pointer; font-size: 12px;
+    `;
+
+    function setButtonsDisabled(disabled) {
+      allButtons.forEach((btn) => (btn.disabled = disabled));
+    }
+
     async function runExport(formatFn, extension, mime) {
-      btnText.disabled = true;
-      btnJSON.disabled = true;
+      setButtonsDisabled(true);
       status.textContent = 'Scrolling through chat...';
 
       const messages = await collectAllMessages((count) => {
@@ -217,15 +314,57 @@
         status.textContent = `Done — saved as "${filename}"`;
       }
 
-      btnText.disabled = false;
-      btnJSON.disabled = false;
+      setButtonsDisabled(false);
+    }
+
+    async function runStats() {
+      setButtonsDisabled(true);
+      statsBox.style.display = 'none';
+      btnDownloadReport.style.display = 'none';
+      status.textContent = 'Scrolling through chat...';
+
+      const messages = await collectAllMessages((count) => {
+        status.textContent = `Found ${count} messages so far...`;
+      });
+
+      if (messages.length === 0) {
+        status.textContent = 'No messages found. Try scrolling manually first, then retry.';
+        setButtonsDisabled(false);
+        return;
+      }
+
+      const a = computeAnalytics(messages);
+      const speakerLines = Object.entries(a.bySpeaker)
+        .map(([name, s]) => `  ${name}: ${s.count} msgs, ${s.words.toLocaleString()} words`)
+        .join('\n');
+
+      statsBox.textContent =
+        `Messages: ${a.totalMessages}\n` +
+        `Words: ${a.totalWords.toLocaleString()}\n` +
+        `Characters: ${a.totalChars.toLocaleString()}\n` +
+        `Avg words/message: ${a.avgWordsPerMessage}\n\n` +
+        `By speaker:\n${speakerLines}` +
+        (a.longest ? `\n\nLongest message: ${a.longest.name} (${a.longest.words} words)` : '');
+
+      statsBox.style.display = 'block';
+      btnDownloadReport.style.display = 'block';
+      btnDownloadReport.onclick = () => {
+        const report = formatAnalyticsReport(messages, getChatName());
+        downloadFile(buildFilename('txt').replace(/\.txt$/, ' - stats.txt'), report, 'text/plain');
+      };
+
+      status.textContent = `Done — analyzed ${messages.length} messages.`;
+      setButtonsDisabled(false);
     }
 
     btnText.onclick = () => runExport(formatAsText, 'txt', 'text/plain');
     btnJSON.onclick = () => runExport(formatAsSillyTavernJSONL, 'jsonl', 'application/jsonl');
+    btnStats.onclick = () => runStats();
 
     panel.appendChild(status);
     panel.appendChild(btnRow);
+    panel.appendChild(statsBox);
+    panel.appendChild(btnDownloadReport);
     document.body.appendChild(panel);
   }
 
