@@ -11,10 +11,12 @@ A Tampermonkey script that exports your Xoul.ai chats to a plain text file or a 
 
 1. Open a chat on Xoul.ai.
 2. **Scroll all the way to the top of the chat first.** The site only loads messages near your current scroll position, so the script needs to walk through the whole thing to grab everything. Starting from the top gives the most reliable results — if the export comes out short, scroll up manually and try again.
-3. A small panel will appear in the bottom-right corner with two buttons. Pick your export type:
-   - **Export .txt** — a plain, readable text file of the conversation.
-   - **Export .jsonl (SillyTavern)** — importable into [SillyTavern](https://github.com/SillyTavern/SillyTavern) as chat history.
-4. The script will auto-scroll through the chat to collect every message (you'll see a live count), then download the file automatically.
+3. A small clickable button will appear in the bottom-right corner that opens a menu with four options. Pick your export type:
+   - **Export .txt** — plain text export
+   - **Export .jsonl (SillyTavern)** — formatted for importing into SillyTavern
+   - **Export .HTML** — a HTML export
+   - **Message Stats** — Character count, word count, total messages, which character sent how many messages, etc.
+4. The script will auto-scroll through the chat to collect every message (you'll see a live count), then download the file automatically, however for best results scroll up first.
 
 ## Known issues
 
